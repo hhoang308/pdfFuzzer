@@ -1,0 +1,10 @@
+[package]
+name = "pdfFuzzer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libafl = { path = "./LibAFL/crates/libafl", features = ["introspection"] }
+libafl_bolts = { path = "./LibAFL/crates/libafl_bolts" }
+libafl_tinyinst = { path = "./LibAFL/crates/libafl_tinyinst" }
+log = { version = "0.4.22", features = ["release_max_level_info"] }
