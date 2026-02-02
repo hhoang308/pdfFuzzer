@@ -3,15 +3,18 @@ use std::{path::PathBuf, time::Duration};
 use libafl::{
     corpus::{CachedOnDiskCorpus, Corpus, OnDiskCorpus, Testcase},
     events::SimpleEventManager,
-    feedbacks::{CrashFeedback, ListFeedback},
-    inputs::BytesInput,
+    feedbacks::{CrashFeedback, ListFeedback, NautilusFeedback},
+    inputs::{BytesInput, NautilusBytesConverter, NautilusInput},
     monitors::SimpleMonitor,
-    mutators::{havoc_mutations, HavocScheduledMutator},
+    mutators::{HavocScheduledMutator, NautilusRandomMutator,
+        NautilusRecursionMutator, NautilusSpliceMutator,},
     observers::ListObserver,
-    schedulers::RandScheduler,
+    schedulers::QueueScheduler,
     stages::StdMutationalStage,
     state::StdState,
     Fuzzer, StdFuzzer,
+    feedback_or,
+    generators::{NautilusContext, NautilusGenerator},
 };
 #[cfg(unix)]
 use libafl_bolts::shmem::UnixShMemProvider;
@@ -28,6 +31,8 @@ fn main() {}
 
 #[cfg(any(target_vendor = "apple", windows, target_os = "linux"))]
 fn main() {
+    // Load grammar from json file
+    let ctx = NautilusContext::from_file(15, "grammar.json").unwrap();
     // Tinyinst things
     let tinyinst_args = vec!["-instrument_module".to_string(), "test.exe".to_string()];
 
@@ -39,29 +44,35 @@ fn main() {
 
     let coverage = OwnedMutPtr::Ptr(&raw mut COVERAGE);
     let observer = ListObserver::new("cov", coverage);
-    let mut feedback = ListFeedback::new(&observer);
+    let mut feedback = feedback_or!(ListFeedback::new(&observer), NautilusFeedback::new(&ctx));
     #[cfg(windows)]
     let mut shmem_provider = Win32ShMemProvider::new().unwrap();
 
     #[cfg(unix)]
     let mut shmem_provider = UnixShMemProvider::new().unwrap();
 
-    let input = BytesInput::new(b"bad".to_vec());
     let rand = StdRand::new();
     let mut corpus = CachedOnDiskCorpus::new(PathBuf::from("./corpus_discovered"), 64).unwrap();
-    corpus
-        .add(Testcase::new(input))
-        .expect("error in adding corpus");
     let solutions = OnDiskCorpus::new(PathBuf::from("./crashes")).unwrap();
 
     let mut objective = CrashFeedback::new();
     let mut state = StdState::new(rand, corpus, solutions, &mut feedback, &mut objective).unwrap();
-    let scheduler = RandScheduler::new();
-    let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
+    let scheduler = QueueScheduler::new();
+    // let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
 
     let monitor = SimpleMonitor::new(|x| println!("{x}"));
 
     let mut mgr = SimpleEventManager::new(monitor);
+
+    let mut generator = NautilusGenerator::new(&ctx);
+
+    let mut fuzzer: StdFuzzer<QueueScheduler, _, _, NautilusInput, BytesInput> = StdFuzzer::builder()
+        .scheduler(scheduler)
+        .feedback(feedback)
+        .objective(objective)
+        .target_bytes_converter(NautilusBytesConverter::new(&ctx))
+        .build();
+
     let mut executor = TinyInstExecutor::builder()
         .tinyinst_args(tinyinst_args)
         .program_args(args)
@@ -73,7 +84,21 @@ fn main() {
         .build(tuple_list!(observer))
         .unwrap();
 
-    let mutator = HavocScheduledMutator::new(havoc_mutations());
+    if state.must_load_initial_inputs() {
+        state
+            .generate_initial_inputs_forced(&mut fuzzer, &mut executor, &mut generator, &mut mgr, 4)
+            .expect("Failed to generate the initial corpus");
+    }
+
+    let mutator = HavocScheduledMutator::with_max_stack_pow(
+        tuple_list!(
+            NautilusRandomMutator::new(&ctx),
+            NautilusRandomMutator::new(&ctx),
+            NautilusRecursionMutator::new(&ctx),
+            NautilusSpliceMutator::new(&ctx),
+        ),
+        2,
+    );
     let mut stages = tuple_list!(StdMutationalStage::new(mutator));
     fuzzer
         .fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)

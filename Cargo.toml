@@ -5,7 +5,7 @@ authors = ["Nguyen Huy Hoang <huyhoang3082001@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-libafl = { path = "./LibAFL/crates/libafl", features = ["introspection"] }
+libafl = { path = "./LibAFL/crates/libafl", features = ["std", "nautilus", "introspection"] }
 libafl_bolts = { path = "./LibAFL/crates/libafl_bolts" }
 libafl_tinyinst = { path = "./LibAFL/crates/libafl_tinyinst" }
 log = { version = "0.4.22", features = ["release_max_level_info"] }
